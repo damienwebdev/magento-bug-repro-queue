@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework-message-queue:etc/topology.xsd">
+	<exchange name="my.exchange" type="topic" connection="amqp">
+		<binding id="binding" topic="my.topic" destinationType="queue" destination="my.queue">
+		</binding>
+	</exchange>
+    <queue name="my.queue" connection="amqp" type="queue">
+    </queue>
+	<queue name="my.queue.two" connection="amqp" type="queue">
+        <arguments>
+           <argument name="x-message-ttl" xsi:type="int">1000</argument>
+           <argument name="x-dead-letter-exchange" xsi:type="string">my.exchange</argument>
+       </arguments>
+    </queue>
+</config>

@@ -18,3 +18,6 @@ To verify, follow along.
 ## Check RabbitMQ Management
 * http://magento2.docker:15672/#/exchanges
 
+You should see:
+1. An exchange called `my.exchange`.
+2. Two queues, `my.queue` and `my.queue.two`.

@@ -1,0 +1,37 @@
+{
+    "name": "company/package",
+    "description": "A test package",
+    "type": "magento2-module",
+    "license": "MIT",
+    "authors": [
+        {
+            "email": "damien@graycore.io",
+            "name": "Damien Retzinger"
+        }
+    ],
+    "minimum-stability": "dev",
+    "require": {
+        "php": ">=7.0.0",
+        "magento/framework": "^102.0"
+    },
+    
+    "require-dev": {
+        "magento/magento-coding-standard": "^5.0",
+        "phpunit/phpunit": "^8.2",
+        "squizlabs/php_codesniffer": "^3.4"
+    },
+    "repositories": [
+        {
+            "type": "composer",
+            "url": "https://repo.magento.com/"
+        }
+    ],
+    "autoload": {
+        "files": [
+            "registration.php"
+        ],
+        "psr-4": {
+            "Company\\Package\\": ""
+        }
+    }
+}

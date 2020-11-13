@@ -1,0 +1,424 @@
+--- b/Topology/Config/Data.php
++++ a/Topology/Config/Data.php
+@@ -23,4 +23,20 @@
+     ) {
+         parent::__construct($reader, $cache, $cacheId, $serializer);
+     }
++
++    public function getQueues(): array {
++        return array_filter($this->get(),function($item){
++            if($item['type'] == 'queue'){
++                return $item;
++            }
++        });
++    }
++
++    public function getExchanges(): array {
++        return array_filter($this->get(),function($item){
++            if($item['type'] != 'queue'){
++                return $item;
++            }
++        });
++    }
+ }
+--- b/Topology/Config/ExchangeConfigItem/Iterator.php
++++ a/Topology/Config/ExchangeConfigItem/Iterator.php
+@@ -36,7 +36,7 @@
+      */
+     public function __construct(Data $configData, ExchangeConfigItemFactory $itemFactory)
+     {
++        $this->data = $configData->getExchanges();
+-        $this->data = $configData->get();
+         $this->object = $itemFactory->create();
+         $this->rewind();
+     }
+--- b/Topology/Config/ExchangeConfigItem.php
++++ a/Topology/Config/ExchangeConfigItem.php
+@@ -7,6 +7,8 @@
+ 
+ use Magento\Framework\MessageQueue\Topology\Config\ExchangeConfigItem\BindingInterface;
+ use Magento\Framework\MessageQueue\Topology\Config\ExchangeConfigItem\Binding\IteratorFactory;
++use Magento\Framework\MessageQueue\Topology\Config\ExchangeConfigItem\Binding\Iterator;
++use Magento\Framework\MessageQueue\Topology\Config\ExchangeConfigItem\BindingFactory;
+ 
+ /**
+  * {@inheritdoc}
+@@ -37,7 +39,7 @@
+     /**
+      * Exchange bindings.
+      *
++     * @var Iterator
+-     * @var BindingInterface[]
+      */
+     private $bindings;
+ 
+@@ -69,6 +71,11 @@
+      */
+     private $isInternal;
+ 
++    /**
++     * @var BindingFactory
++     */
++    public $bindingFactory;
++
+     /**
+      * Initialize dependencies.
+      *
+@@ -158,6 +165,11 @@
+         $this->isDurable = $data['durable'];
+         $this->isAutoDelete = $data['autoDelete'];
+         $this->arguments = $data['arguments'];
++        if( $this->type != 'queue'){
++            $this->bindings->setData($data['bindings']);
++        }
++        else{
++            $this->bindings->setData([]);
++        }
+-        $this->bindings->setData($data['bindings']);
+     }
+ }
+--- b/Topology/Config/QueueConfigItem/DataMapper.php
++++ a/Topology/Config/QueueConfigItem/DataMapper.php
+@@ -1,8 +1,10 @@
+ <?php
++
+ /**
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++
+ namespace Magento\Framework\MessageQueue\Topology\Config\QueueConfigItem;
+ 
+ use Magento\Framework\MessageQueue\Topology\Config\Data;
+@@ -64,16 +66,22 @@
+     {
+         if (null === $this->mappedData) {
+             $this->mappedData = [];
++
++            $queues = $this->createQueueItemsFromQueues($this->configData->getQueues());
++            foreach ($queues as $key => $value) {
++                $this->mappedData[$key] = $value;
++            }
++            foreach ($this->configData->getExchanges() as $exchange) {
+-            foreach ($this->configData->get() as $exchange) {
+                 $connection = $exchange['connection'];
+                 foreach ($exchange['bindings'] as $binding) {
++                    if ($binding['destinationType'] === 'queue' && !array_key_exists($binding['destination'] . '--' . $connection, $this->mappedData)) {
+-                    if ($binding['destinationType'] === 'queue') {
+                         $queueItems = $this->createQueueItems($binding['destination'], $binding['topic'], $connection);
+                         $this->mappedData = array_merge($this->mappedData, $queueItems);
+                     }
+                 }
+             }
+         }
++
+         return $this->mappedData;
+     }
+ 
+@@ -83,13 +91,54 @@
+      * @param string $name
+      * @param string $topic
+      * @param string $connection
++     * @deprecated
+      * @return array
+      */
+     private function createQueueItems($name, $topic, $connection)
++    {
++        return $this->createQueueItemsFromTopic($name, $topic, $connection);
++    }
++
++    private function createQueueItemsFromQueues(array $queues)
++    {
++        $output = [];
++        foreach ($queues as $queue) {
++            $output[$queue['name'] . '--' . $queue['connection']] =
++                $this->createQueue(
++                    $queue['name'],
++                    $queue['connection'],
++                    $queue['arguments'],
++                    $queue['durable'],
++                    $queue['autoDelete']
++                );
++        }
++        return $output;
++    }
++
++    private function createQueue($name, $connection, $arguments = [], $durable = true, $autoDelete = false)
++    {
++        return [
++            'name' => $name,
++            'connection' => $connection,
++            'durable' => isset($durable) ? $durable : true,
++            'autoDelete' => isset($autoDelete) ? $autoDelete : false,
++            'arguments' => isset($arguments) ? $arguments : [],
++        ];
++    }
++
++    /**
++     * Create queue config item.
++     *
++     * @param string $name
++     * @param string $topic
++     * @param string $connection
++     * @return array
++     */
++    private function createQueueItemsFromTopic($name, $topic, $connection)
+     {
+         $output = [];
+         $synchronousTopics = [];
++        
+-
+         if (strpos($topic, '*') !== false || strpos($topic, '#') !== false) {
+             $synchronousTopics = $this->matchSynchronousTopics($topic);
+         } elseif ($this->isSynchronousTopic($topic)) {
+--- b/Topology/Config/Validator/DependentFields.php
++++ a/Topology/Config/Validator/DependentFields.php
+@@ -1,8 +1,10 @@
+ <?php
++
+ /**
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++
+ namespace Magento\Framework\MessageQueue\Topology\Config\Validator;
+ 
+ use Magento\Framework\MessageQueue\Topology\Config\ValidatorInterface;
+@@ -19,9 +21,11 @@
+     {
+         $errors = [];
+         foreach ($configData as $name => $data) {
++            if ($data['type'] != 'queue') {
++                foreach ((array)$data['bindings'] as $binding) {
++                    if (isset($data['type']) && $data['type'] == 'topic' && !isset($binding['topic'])) {
++                        $errors[] = 'Topic name is required for topic based exchange: ' . $name;
++                    }
+-            foreach ((array)$data['bindings'] as $binding) {
+-                if (isset($data['type']) && $data['type'] == 'topic' && !isset($binding['topic'])) {
+-                    $errors[] = 'Topic name is required for topic based exchange: ' . $name;
+                 }
+             }
+         }
+--- b/Topology/Config/Validator/FieldsTypes.php
++++ a/Topology/Config/Validator/FieldsTypes.php
+@@ -18,7 +18,8 @@
+     public function validate($configData)
+     {
+         foreach ($configData as $exchangeName => $exchangeConfig) {
++            $exchangeConfig['type'] != 'queue' ? 
++            $this->validateFieldsTypes($exchangeName, $exchangeConfig) : $this->validateQueueTypes($exchangeName, $exchangeConfig);
+-            $this->validateFieldsTypes($exchangeName, $exchangeConfig);
+         }
+     }
+ 
+@@ -128,4 +129,16 @@
+             }
+         }
+     }
++
++    /**
++     * Make sure types of all fields in the queue item config are correct.
++     *
++     * @param string $queueName
++     * @param array $queueConfig
++     * @return void
++     * @throws \LogicException
++     */
++    private function validateQueueTypes($queueName, $queueConfig)
++    {
++    }
+ }
+--- b/Topology/Config/Validator/Format.php
++++ a/Topology/Config/Validator/Format.php
+@@ -1,8 +1,10 @@
+ <?php
++
+ /**
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++
+ namespace Magento\Framework\MessageQueue\Topology\Config\Validator;
+ 
+ use Magento\Framework\MessageQueue\Topology\Config\ValidatorInterface;
+@@ -17,24 +19,34 @@
+      */
+     public function validate($configData)
+     {
++        $requiredExchangeFields = ['name', 'type', 'connection', 'durable', 'autoDelete', 'internal', 'bindings', 'arguments'];
++        $requiredQueueFields = ['name', 'type', 'connection', 'durable', 'autoDelete', 'internal', 'arguments'];
++
+-        $requiredFields = ['name', 'type', 'connection', 'durable', 'autoDelete', 'internal', 'bindings', 'arguments'];
+         $requiredBindingFields = ['id', 'destinationType', 'destination', 'disabled', 'topic', 'arguments'];
+         $errors = [];
+         foreach ($configData as $name => $data) {
++            if ($data['type'] != 'queue') {
++                $diff = array_diff($requiredExchangeFields, array_keys($data));
++                foreach ($diff as $field) {
++                    $errors[] = sprintf('Missing [%s] field for exchange %s.', $field, $name);
++                }
++
++                if (!array_key_exists('bindings', $data) || !is_array($data['bindings'])) {
++                    $errors[] = sprintf('Invalid bindings format for exchange %s.', $name);
++                    continue;
++                }
+-            $diff = array_diff($requiredFields, array_keys($data));
+-            foreach ($diff as $field) {
+-                $errors[] = sprintf('Missing [%s] field for exchange %s.', $field, $name);
+-            }
+ 
++                foreach ($data['bindings'] as $bindingConfig) {
++                    $diff = array_diff($requiredBindingFields, array_keys($bindingConfig));
++                    foreach ($diff as $field) {
++                        $errors[] = sprintf('Missing [%s] field for binding %s in exchange config.', $field, $name);
++                    }
++                }
+-            if (!array_key_exists('bindings', $data) || !is_array($data['bindings'])) {
+-                $errors[] = sprintf('Invalid bindings format for exchange %s.', $name);
+-                continue;
+             }
++            else{
++                $diff = array_diff($requiredQueueFields, array_keys($data));
+-
+-            foreach ($data['bindings'] as $bindingConfig) {
+-                $diff = array_diff($requiredBindingFields, array_keys($bindingConfig));
+                 foreach ($diff as $field) {
++                    $errors[] = sprintf('Really Missing [%s] field for queue %s.', $field, $name);
+-                    $errors[] = sprintf('Missing [%s] field for binding %s in exchange config.', $field, $name);
+                 }
+             }
+         }
+--- b/Topology/Config/Xml/Converter.php
++++ a/Topology/Config/Xml/Converter.php
+@@ -99,6 +99,41 @@
+                 'arguments' => $exchangeArguments,
+             ];
+         }
++
++        foreach ($source->getElementsByTagName('queue') as $exchange) {
++            $name = $this->getAttributeValue($exchange, 'name');
++            $connection = $this->getAttributeValue($exchange, 'connection');
++
++            $bindings = [];
++            $exchangeArguments = [];
++            /** @var \DOMNode $node */
++            foreach ($exchange->childNodes as $node) {
++                if (!in_array($node->nodeName, ['binding', 'arguments']) || $node->nodeType != XML_ELEMENT_NODE) {
++                    continue;
++                }
++                switch ($node->nodeName) {
++                    case 'binding':
++                        $bindings = $this->processBindings($node, $bindings);
++                        break;
++
++                    case 'arguments':
++                        $exchangeArguments = $this->processArguments($node);
++                        break;
++                }
++            }
++
++            $autoDelete = $this->getAttributeValue($exchange, 'autoDelete', false);
++            $result[$name . '--' . $connection] = [
++                'name' => $name,
++                'type' => $this->getAttributeValue($exchange, 'type'),
++                'connection' => $connection,
++                'durable' => $this->booleanUtils->toBoolean($this->getAttributeValue($exchange, 'durable', true)),
++                'autoDelete' => $this->booleanUtils->toBoolean($autoDelete),
++                'internal' => $this->booleanUtils->toBoolean($this->getAttributeValue($exchange, 'internal', false)),
++                'arguments' => $exchangeArguments,
++            ];
++        }
++
+         return $result;
+     }
+ 
+--- b/Topology/Config/Xml/Reader.php
++++ a/Topology/Config/Xml/Reader.php
+@@ -22,6 +22,9 @@
+         '/config/exchange/binding' => 'id',
+         '/config/exchange/binding/arguments/argument' => 'name',
+         '/config/exchange/binding/arguments/argument(/item)+' => 'name',
++        '/config/queue' => ['name', 'connection'],
++        '/config/queue/arguments/argument' => 'name',
++        '/config/queue/arguments/argument(/item)+' => 'name'
+     ];
+ 
+     /**
+--- b/etc/topology.xsd
++++ a/etc/topology.xsd
+@@ -42,6 +42,12 @@
+         </xs:complexContent>
+     </xs:complexType>
+ 
++    <xs:complexType name="int">
++        <xs:complexContent>
++            <xs:extension base="argumentType"/>
++        </xs:complexContent>
++    </xs:complexType>
++
+     <xs:complexType name="boolean">
+         <xs:complexContent>
+             <xs:extension base="argumentType"/>
+@@ -68,6 +74,7 @@
+                         <xs:field xpath="@id"/>
+                     </xs:unique>
+                 </xs:element>
++                <xs:element type="queueConfigType" name="queue" maxOccurs="unbounded" minOccurs="0"/>
+             </xs:sequence>
+         </xs:complexType>
+         <xs:unique name="unique-exchange-name-connection">
+@@ -106,6 +113,18 @@
+         <xs:attribute type="xs:boolean" name="internal" use="optional"/>
+     </xs:complexType>
+ 
++     <xs:complexType name="queueConfigType">
++        <xs:choice maxOccurs="unbounded">
++            <xs:element type="argumentsType" name="arguments" minOccurs="0" maxOccurs="unbounded"/>
++        </xs:choice>
++        <xs:attribute type="xs:string" name="name" use="required"/>
++        <xs:attribute type="queueType" name="type" use="required"/>
++        <xs:attribute name="connection" type="xs:string" use="required" />
++        <xs:attribute type="xs:boolean" name="durable" use="optional"/>
++        <xs:attribute type="xs:boolean" name="autoDelete" use="optional"/>
++        <xs:attribute type="xs:boolean" name="internal" use="optional"/>
++    </xs:complexType>
++
+     <xs:simpleType name="exchangeType">
+         <xs:restriction base="xs:string">
+             <xs:enumeration value="topic" />
+@@ -117,4 +136,10 @@
+             <xs:enumeration value="queue" />
+         </xs:restriction>
+     </xs:simpleType>
++
++    <xs:simpleType name="queueType">
++        <xs:restriction base="xs:string">
++            <xs:enumeration value="queue" />
++        </xs:restriction>
++    </xs:simpleType>
+ </xs:schema>
+--- b/etc/topology_merged.xsd
++++ a/etc/topology_merged.xsd
+@@ -41,4 +41,22 @@
+             </xs:complexContent>
+         </xs:complexType>
+     </xs:redefine>
++
++    <xs:redefine schemaLocation="urn:magento:framework-message-queue:etc/topology.xsd">
++        <xs:complexType name="queueConfigType">
++            <xs:complexContent>
++                <xs:restriction base="queueConfigType">
++                    <xs:choice maxOccurs="unbounded">
++                        <xs:element type="argumentsType" name="arguments" minOccurs="0" maxOccurs="unbounded"/>
++                    </xs:choice>
++                    <xs:attribute type="xs:string" name="name" use="required"/>
++                    <xs:attribute type="queueType" name="type" use="required"/>
++                    <xs:attribute name="connection" type="xs:string" use="required" />
++                    <xs:attribute type="xs:boolean" name="durable" use="optional"/>
++                    <xs:attribute type="xs:boolean" name="autoDelete" use="optional"/>
++                    <xs:attribute type="xs:boolean" name="internal" use="optional"/>
++                </xs:restriction>
++            </xs:complexContent>
++        </xs:complexType>
++    </xs:redefine>
+ </xs:schema>

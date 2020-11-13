@@ -15,7 +15,8 @@
         }
     },
     "require": {
-        "magento/magento-cloud-metapackage": ">=2.3.5 <2.3.6"
+        "magento/magento-cloud-metapackage": ">=2.3.5 <2.3.6",
+        "cweagans/composer-patches": "^1.6"
     },
     "suggest": {
         "ext-pcntl": "Need for run processes in parallel mode"
@@ -73,6 +74,21 @@
             "tinymce/tinymce": "lib/web/tiny_mce_4"
         },
         "magento-force": true,
-        "magento-deploystrategy": "copy"
+        "magento-deploystrategy": "copy",
+        "composer-exit-on-patch-failure": true,
+        "patches": {
+            "magento/framework": {
+                "first-class-queue": "patches/magento/queue/framework.diff"
+            },
+            "magento/framework-message-queue": {
+                "first-class-queue": "patches/magento/queue/message-queue.diff"
+            },
+            "magento/module-ui": {
+                "first-class-queue": "patches/magento/queue/ui.diff"
+            },
+            "magento/magento2-base": {
+                "first-class-queue": "patches/magento/queue/base.diff"
+            }
+        }
     }
 }

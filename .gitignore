@@ -25,5 +25,7 @@
 !/.github
 !/.github/*
 
+!/patches
+!/patches/**
 
 auth.json
